@@ -1,0 +1,23 @@
+//script for chest with 500 gold in it
+
+void main( void)
+{
+preload_seq(177);
+}
+
+void hit ( void )
+ {
+  //play noise
+  int &hold = sp_editor_num(&current_sprite);
+
+  //30th: the chest stays open for good only once its loot is taken (make.c hands &hold to the loot)
+  &save_x = sp_x(&current_sprite, -1);
+  &save_y = sp_y(&current_sprite, -1);
+  external("make", "gold500", &hold, 177, 6);
+
+  sp_seq(&current_sprite, 177);
+  sp_script(&current_sprite, "");
+  sp_notouch(&current_sprite, 1);
+  sp_nohit(&current_sprite, 1);
+  kill_this_task();
+ }

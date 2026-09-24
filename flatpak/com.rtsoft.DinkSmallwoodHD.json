@@ -1,0 +1,93 @@
+{
+  "app-id": "com.rtsoft.DinkSmallwoodHD",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "24.08",
+  "sdk": "org.freedesktop.Sdk",
+  "command": "dink-smallwood-hd",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--socket=pulseaudio",
+    "--device=dri",
+    "--share=network",
+    "--filesystem=xdg-run/pipewire-0:ro"
+  ],
+  "modules": [
+    {
+      "name": "fluidsynth",
+      "buildsystem": "cmake-ninja",
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DLIB_SUFFIX=",
+        "-DCMAKE_INSTALL_LIBDIR=lib",
+        "-Denable-libsndfile=OFF",
+        "-Denable-dbus=OFF",
+        "-Denable-ipv6=OFF",
+        "-Denable-network=OFF",
+        "-Denable-oss=OFF",
+        "-Denable-midishare=OFF",
+        "-Denable-readline=OFF",
+        "-Denable-ladspa=OFF"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/FluidSynth/fluidsynth/archive/v2.3.4.tar.gz",
+          "sha256": "1529ef5bc3b9ef3adc2a7964505912f7305103e269e50cc0316f500b22053ac9"
+        }
+      ]
+    },
+    {
+      "name": "SDL2_mixer",
+      "buildsystem": "cmake-ninja",
+      "builddir": true,
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_INSTALL_LIBDIR=lib",
+        "-DSDL2MIXER_FLUIDSYNTH=ON",
+        "-DSDL2MIXER_MIDI=ON",
+        "-DSDL2MIXER_OPUS=OFF",
+        "-DSDL2MIXER_MOD=OFF",
+        "-DSDL2MIXER_FLAC=OFF",
+        "-DSDL2MIXER_MP3=ON"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.0/SDL2_mixer-2.8.0.tar.gz",
+          "sha256": "1cfb34c87b26dbdbc7afd68c4f545c0116ab5f90bbfecc5aebe2a9cb4bb31549"
+        }
+      ]
+    },
+    {
+      "name": "dink-smallwood-hd",
+      "buildsystem": "cmake-ninja",
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_CXX_FLAGS=-Wno-unused-result -I/usr/include/SDL2",
+        "-DCMAKE_C_FLAGS=-Wno-unused-result -I/usr/include/SDL2"
+      ],
+      "post-install": [
+        "install -Dm755 flatpak/dink-smallwood-hd.sh /app/bin/dink-smallwood-hd",
+        "install -Dm644 flatpak/com.rtsoft.DinkSmallwoodHD.desktop /app/share/applications/com.rtsoft.DinkSmallwoodHD.desktop",
+        "install -Dm644 flatpak/com.rtsoft.DinkSmallwoodHD.metainfo.xml /app/share/metainfo/com.rtsoft.DinkSmallwoodHD.metainfo.xml",
+        "install -Dm644 flatpak/com.rtsoft.DinkSmallwoodHD.png /app/share/icons/hicolor/512x512/apps/com.rtsoft.DinkSmallwoodHD.png",
+        "install -Dm0644 LICENSE.md -t ${FLATPAK_DEST}/share/licenses/${FLATPAK_ID}/",
+        "install -Dm0644 bin/dink/midi/TimGM6mb_LICENSE.txt -t ${FLATPAK_DEST}/share/licenses/${FLATPAK_ID}/"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": ".."
+        },
+        {
+          "type": "git",
+          "url": "https://github.com/SethRobinson/proton.git",
+          "commit": "16b16b193ab80d75bb0e70c1237582373c9493fb",
+          "dest": "proton"
+        }
+      ]
+    }
+  ]
+}

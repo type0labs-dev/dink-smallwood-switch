@@ -1,0 +1,844 @@
+diff --git i/AGENTS.md w/AGENTS.md
+index 4036402..2b9d324 100644
+--- i/AGENTS.md
++++ w/AGENTS.md
+@@ -302,3 +302,10 @@ Scope policy: this file holds cross-cutting rules, workflows, and gotchas that m
+ - NEVER `git push` unless explicitly told to push. "Commit" means commit
+   locally only; committing is not permission to push.
+ 
++
++## Experimental Switch host integration
++
++RTDink's Switch build reuses the Linux/SDL backend with `__SWITCH__` guards.
++SDL requests GLES1.1; platform headers, texture formats, sockets and cwd differ
++from Linux. Standard SDL controller mappings apply (not Raspberry Pi remapping).
++The owning RTDink checkout stores this SDK delta in `switch/patches/proton-switch.patch`.
+diff --git i/shared/Audio/AudioManagerSDL.cpp w/shared/Audio/AudioManagerSDL.cpp
+index 3c55446..950e841 100644
+--- i/shared/Audio/AudioManagerSDL.cpp
++++ w/shared/Audio/AudioManagerSDL.cpp
+@@ -4,6 +4,9 @@
+ #define NUM_CHANNELS 64
+ 
+ #include "AudioManagerSDL.h"
++#ifdef __SWITCH__
++#include "MusicDiagnostics.h"
++#endif
+ #include "util/MiscUtils.h"
+ 
+ //0 is a valid channel in SDL audio, but 0 is a bad audio handle the rest of Proton, this hack gets around it
+@@ -149,12 +152,21 @@ bool AudioManagerSDL::Init()
+ 	Mix_ReserveChannels(2);
+ 
+ 
++#ifdef __SWITCH__
++	// 2048 samples at 44100 Hz (~46ms) provides stable playback without buffer
++	// starvation under CPU load, while keeping sound effect latency crisp.
++	int rate = 44100;
++	Uint16 format = AUDIO_S16SYS;
++	int channels = 2;
++	int bufferSize = 2048;
++#else
+ 	//44100 or  22050
+ 	int rate = 44100;
+ 	//They play right in other players, so sdlmixer bug I assume
+ 	Uint16 format = AUDIO_S16LSB;
+ 	int channels = 2;
+ 	int bufferSize = 2048;
++#endif
+ 	
+ #if defined(PLATFORM_HTML5)
+ 	int ret = Mix_OpenAudio(0, 0, 0, 0); // we ignore all these..
+@@ -169,6 +181,15 @@ bool AudioManagerSDL::Init()
+ 		return false;
+ 
+ 	}
++#ifdef __SWITCH__
++	int actualRate = 0, actualChannels = 0;
++	Uint16 actualFormat = 0;
++	if (Mix_QuerySpec(&actualRate, &actualFormat, &actualChannels))
++	{
++		LogMsg("SDL_mixer opened: rate=%d format=0x%x channels=%d",
++			actualRate, actualFormat, actualChannels);
++	}
++#endif
+ #endif
+ 
+ 	if (Mix_AllocateChannels(NUM_CHANNELS) == -1)
+@@ -176,6 +197,22 @@ bool AudioManagerSDL::Init()
+ 		LogMsg(Mix_GetError());
+ 	}
+ 	Mix_HookMusicFinished(musicFinishedCallback);
++#ifdef __SWITCH__
++    if (dink_music_diagnostics::enabled()) {
++        dink_music_diagnostics::write("BOOT 0.2.3 cwd=%s TIMIDITY_CFG=%s", GetBaseAppPath().c_str(), SDL_getenv("TIMIDITY_CFG") ? SDL_getenv("TIMIDITY_CFG") : "(unset)");
++        for (const char* path : {"dink/sound/1003.mid", "dink/sound/7.ogg"}) {
++            SDL_ClearError();
++            Mix_Music* probe = Mix_LoadMUS(path);
++            dink_music_diagnostics::write("PROBE path=%s loaded=%d error=%s", path, probe != NULL, probe ? "" : Mix_GetError());
++            if (probe) Mix_FreeMusic(probe);
++        }
++    }
++#endif
++#ifdef __SWITCH__
++    for (int decoder = 0; decoder < Mix_GetNumMusicDecoders(); ++decoder) {
++        LogMsg("Music decoder: %s", Mix_GetMusicDecoder(decoder));
++    }
++#endif
+ 
+ 	//SDL_PauseAudioDevice(dev, 0); // start audio playing.
+ 	SDL_PauseAudio(0);
+@@ -362,6 +399,9 @@ AudioHandle AudioManagerSDL::Play( string fName, bool bLooping /*= false*/, bool
+ 	if (!GetSoundEnabled() && !bIsMusic) return AUDIO_HANDLE_BLANK;
+ 	
+ 	fName = ModifiedFileName(fName);
++#ifdef __SWITCH__
++    if (bIsMusic) dink_music_diagnostics::write("PLAY path=%s enabled=%d volume=%.3f addbase=%d", fName.c_str(), GetMusicEnabled(), m_musicVol, bAddBasePath);
++#endif
+ 
+ 	if (!GetMusicEnabled() && bIsMusic)
+ 	{
+@@ -413,6 +453,9 @@ AudioHandle AudioManagerSDL::Play( string fName, bool bLooping /*= false*/, bool
+ #endif
+ 
+ 		m_pMusicChannel = Mix_LoadMUS( (basePath+fName).c_str());
++#ifdef __SWITCH__
++        dink_music_diagnostics::write("LOAD path=%s success=%d error=%s", (basePath+fName).c_str(), m_pMusicChannel != NULL, Mix_GetError());
++#endif
+ 
+ #ifdef _DEBUG
+ if (!m_pMusicChannel)
+@@ -441,8 +484,15 @@ if (!m_pMusicChannel)
+ 		if (ret == -1)
+ 		{
+ 			LogError("Unable to play music file %s. %s", (GetBaseAppPath()+fName).c_str(), Mix_GetError());
++#ifdef __SWITCH__
++            StopMusic();
++            return AUDIO_HANDLE_BLANK;
++#endif
+ 		}
+ 		SetMusicVol(m_musicVol);
++#ifdef __SWITCH__
++        dink_music_diagnostics::write("START result=%d playing=%d paused=%d mixer_volume=%d error=%s", ret, Mix_PlayingMusic(), Mix_PausedMusic(), Mix_VolumeMusic(-1), Mix_GetError());
++#endif
+ 
+ 		return (AudioHandle) m_pMusicChannel;
+ 	}
+@@ -559,6 +609,9 @@ void AudioManagerSDL::SetMusicEnabled( bool bNew )
+ 
+ void AudioManagerSDL::StopMusic()
+ {
++#ifdef __SWITCH__
++    dink_music_diagnostics::write("STOP path=%s playing=%d", m_lastMusicFileName.c_str(), Mix_PlayingMusic());
++#endif
+ #ifdef _DEBUG
+ 	LogMsg("Deleting music %s", m_lastMusicFileName.c_str());
+ #endif
+diff --git i/shared/GUI/RTFont.cpp w/shared/GUI/RTFont.cpp
+index 6d0e2f5..2e76327 100644
+--- i/shared/GUI/RTFont.cpp
++++ w/shared/GUI/RTFont.cpp
+@@ -4,6 +4,47 @@
+ #include "BaseApp.h"
+ #include "util/utf8.h"
+ 
++static inline uint16 FallbackUnaccented(uint16 ch)
++{
++	switch (ch) {
++		case 192: case 193: case 194: case 195: case 196: case 197: return 'A';
++		case 224: case 225: case 226: case 227: case 228: case 229: return 'a';
++		case 199: return 'C';
++		case 231: return 'c';
++		case 200: case 201: case 202: case 203: return 'E';
++		case 232: case 233: case 234: case 235: return 'e';
++		case 204: case 205: case 206: case 207: return 'I';
++		case 236: case 237: case 238: case 239: return 'i';
++		case 210: case 211: case 212: case 213: case 214: return 'O';
++		case 242: case 243: case 244: case 245: case 246: return 'o';
++		case 217: case 218: case 219: case 220: return 'U';
++		case 249: case 250: case 251: case 252: return 'u';
++		default: return ch;
++	}
++}
++
++static inline uint16 GetNextChar(const char* text, int len, int& i)
++{
++	uint8 b0 = (uint8)text[i];
++	if (b0 < 0x80)
++	{
++		return b0;
++	}
++	int seqLen = (int)utf8::internal::sequence_length<const char*>(&text[i]);
++	if (seqLen >= 2 && seqLen <= 3 && i + seqLen <= len && utf8::is_valid(&text[i], &text[i + seqLen]))
++	{
++		uint16 ch = 0;
++		try {
++			utf8::utf8to16<uint16*, const char*>(&text[i], &text[i + seqLen], &ch);
++			i += seqLen - 1;
++			return ch;
++		} catch (...) {
++			// fallback below
++		}
++	}
++	return b0;
++}
++
+ RTFont::RTFont()
+ {
+ 	InitDefaults();
+@@ -211,30 +252,7 @@ void RTFont::MeasureText( rtRectf *pRectOut, const char *pText, int len, float s
+ 
+ 	for (int i=0; i < len; i++)
+ 	{
+-		seqLen = (uint8)utf8::internal::sequence_length<const char*>(&pText[i]);
+-		if (seqLen > 2)
+-		{
+-			//we do not support these characters, because firstChar and lastChar are shorts
+-			i += seqLen - 1;
+-			continue;
+-		}
+-
+-		if (seqLen > 1)
+-		{
+-			try {
+-				utf8::utf8to16<uint16*, const char*>(&pText[i], &pText[i + seqLen], &curChar);
+-			}
+-			catch (...) {
+-#ifdef _DEBUG
+-				//LogError("Invalid UTF-16 character?!");
+-#endif
+-
+-				i += seqLen - 1;
+-				continue;
+-			}
+-			i += seqLen - 1;
+-		}
+-		else curChar = pText[i];
++		curChar = GetNextChar(pText, len, i);
+ 		
+ 		//OPTIMIZE: We don't really need IsFontCode and to calculate states to simply measure things.. unless later we handle font
+ 		//changes..
+@@ -258,13 +276,18 @@ void RTFont::MeasureText( rtRectf *pRectOut, const char *pText, int len, float s
+ 			lastChar = 0;
+ 			continue;
+ 		}
+-		if (curChar-m_header.firstChar >= m_chars.size())
++		if (curChar-m_header.firstChar >= m_chars.size() || m_chars[curChar-m_header.firstChar].data.charSizeX == 0)
+ 		{
+-#ifdef _DEBUG
+-			//LogMsg("Char %c (%d) is not in our font", curChar, curChar);
+-#endif
+-			lastChar = 0;
+-			continue;
++			uint16 fb = FallbackUnaccented(curChar);
++			if (fb != curChar && fb-m_header.firstChar < m_chars.size() && m_chars[fb-m_header.firstChar].data.charSizeX > 0)
++			{
++				curChar = fb;
++			}
++			else
++			{
++				lastChar = 0;
++				continue;
++			}
+ 		}
+ 
+ 		if (lastChar)
+@@ -342,30 +365,9 @@ void RTFont::DrawScaled( float x, float y, const string &text, float scale /*= 1
+ 
+ 	for (unsigned int i=0; i < text.length(); i++)
+ 	{
+-		seqLen = (uint8)utf8::internal::sequence_length<const char*>(&text.c_str()[i]);
+-		if (seqLen > 2)
+-		{ 
+-			//we do not support these characters, because firstChar and lastChar are shorts
+-			i += seqLen - 1;
+-			continue;
+-		}
+-
+-		if (seqLen > 1)
+-		{
+-			try {
+-				utf8::utf8to16<uint16*, const char*>(&text.c_str()[i], &text.c_str()[i + seqLen], &curChar);
+-			}
+-			catch (...) {
+-#ifdef _DEBUG
+-				//LogError("Invalid UTF-16 character?!");
+-#endif
+-
+-				i += seqLen - 1;
+-				continue;
+-			}
+-			i += seqLen - 1;
+-		}
+-		else curChar = text[i];
++		int curIndex = (int)i;
++		curChar = GetNextChar(text.c_str(), (int)text.length(), curIndex);
++		i = (unsigned int)curIndex;
+ 		 
+ 		if (IsFontCode(&text.c_str()[i], pState))
+ 		{
+@@ -387,14 +389,18 @@ void RTFont::DrawScaled( float x, float y, const string &text, float scale /*= 1
+ 			continue;
+ 		}
+ 		
+-		if (curChar-m_header.firstChar >= m_chars.size())
++		if (curChar-m_header.firstChar >= m_chars.size() || m_chars[curChar-m_header.firstChar].data.charSizeX == 0)
+ 		{
+-#ifdef _DEBUG
+-		//LogMsg("Char %c (%d) is not in our font", text[i], int(text[i]));
+-#endif
+-
+-			lastChar = 0;
+-			continue;
++			uint16 fb = FallbackUnaccented(curChar);
++			if (fb != curChar && fb-m_header.firstChar < m_chars.size() && m_chars[fb-m_header.firstChar].data.charSizeX > 0)
++			{
++				curChar = fb;
++			}
++			else
++			{
++				lastChar = 0;
++				continue;
++			}
+ 		}
+ 	
+ 		if (lastChar)
+@@ -508,30 +514,9 @@ void RTFont::DrawScaledSolidColor( float x, float y, const string &text, float s
+ 
+ 	for (unsigned int i=0; i < text.length(); i++)
+ 	{
+-		seqLen = (uint8)utf8::internal::sequence_length<const char*>(&text.c_str()[i]);
+-		if (seqLen > 2)
+-		{
+-			//we do not support these characters, because firstChar and lastChar are shorts
+-			i += seqLen - 1;
+-			continue;
+-		}
+-
+-		if (seqLen > 1)
+-		{
+-			try {
+-				utf8::utf8to16<uint16*, const char*>(&text.c_str()[i], &text.c_str()[i + seqLen], &curChar);
+-			}
+-			catch (...) {
+-#ifdef _DEBUG
+-				//LogError("Invalid UTF-16 character?!");
+-#endif
+-
+-				i += seqLen - 1;
+-				continue;
+-			}
+-			i += seqLen - 1;
+-		}
+-		else curChar = text[i];
++		int curIndex = (int)i;
++		curChar = GetNextChar(text.c_str(), (int)text.length(), curIndex);
++		i = (unsigned int)curIndex;
+ 		
+ 		if (IsFontCode(&text.c_str()[i], pState))
+ 		{
+@@ -973,34 +958,15 @@ string RTFont::FilterOutInvalidChars(const string& input, bool bStrict) {
+ 
+ 	for (size_t i = 0; i < input.length(); i++)
+ 	{
+-		seqLen = (uint8)utf8::internal::sequence_length<const char*>(&input.c_str()[i]);
+-		if (seqLen > 2)
+-		{
+-			i += seqLen - 1;
+-			continue;
+-		}
+-		if (seqLen < 1) seqLen = 1;
+-
+-		if (seqLen > 1)
+-		{
+-			resChar = *(uint16*)&input.c_str()[i];
+-			try {
+-				utf8::utf8to16<uint16*, const char*>(&input.c_str()[i], &input.c_str()[i + seqLen], &curChar);
+-			}
+-			catch (...) {
+-				i += seqLen - 1;
+-				continue;
+-			}
+-			i += seqLen - 1;
+-		}
+-		else {
+-			curChar = input[i];
+-			resChar = curChar;
+-		}
++		int startIdx = (int)i;
++		int curIndex = (int)i;
++		curChar = GetNextChar(input.c_str(), (int)input.length(), curIndex);
++		int advance = curIndex - startIdx + 1;
++		i = (size_t)curIndex;
+ 
+ 		if (IsValidChar(curChar, bStrict))
+ 		{
+-			output.append((char*)&resChar, seqLen);
++			output.append(&input.c_str()[startIdx], advance);
+ 		}
+ 	}
+ 
+@@ -1052,30 +1018,9 @@ int RTFont::CountCharsThatFitX( float sizeX, const string &text, float scale /*=
+ 
+ 		lastGood = i;
+ 
+-		seqLen = (uint8)utf8::internal::sequence_length<const char*>(&text.c_str()[i]);
+-		if (seqLen > 2)
+-		{
+-			//we do not support these characters, because firstChar and lastChar are shorts
+-			i += seqLen - 1;
+-			continue;
+-		}
+-
+-		if (seqLen > 1)
+-		{
+-			try {
+-				utf8::utf8to16<uint16*, const char*>(&text.c_str()[i], &text.c_str()[i + seqLen], &curChar);
+-			}
+-			catch (...) {
+-#ifdef _DEBUG
+-				//LogError("Invalid UTF-16 character?!");
+-#endif
+-
+-				i += seqLen - 1;
+-				continue;
+-			}
+-			i += seqLen - 1;
+-		}
+-		else curChar = text[i];
++		int curIndex = (int)i;
++		curChar = GetNextChar(text.c_str(), (int)text.size(), curIndex);
++		i = (uint32)curIndex;
+ 
+ 		if (IsFontCode(&text[i], &state))
+ 		{
+diff --git i/shared/Gamepad/GamepadSDL2.cpp w/shared/Gamepad/GamepadSDL2.cpp
+index 67e6e1b..7e884b6 100644
+--- i/shared/Gamepad/GamepadSDL2.cpp
++++ w/shared/Gamepad/GamepadSDL2.cpp
+@@ -39,7 +39,11 @@ void GamepadSDL2::InitExtraSDLStuff(SDL_GameController* pController, SDL_Joystic
+ 
+ 		}
+ 
+-		if (GetPlatformID() == PLATFORM_ID_LINUX)
++		if (GetPlatformID() == PLATFORM_ID_LINUX
++#ifdef __SWITCH__
++            && false // Use the standard SDL mapping on Switch.
++#endif
++        )
+ 		{
+ 			//for whatever reason, a 360 maps incorrectly on raspberry pi os, but correctly on Windows?  Oh well, here's the linux version:
+ 
+diff --git i/shared/Manager/VariantDB.cpp w/shared/Manager/VariantDB.cpp
+index b4b50b0..a300ce3 100644
+--- i/shared/Manager/VariantDB.cpp
++++ w/shared/Manager/VariantDB.cpp
+@@ -159,6 +159,14 @@ bool VariantDB::Save(const string &fileName, bool bAddBasePath)
+ 		LogError("Unable to save data");
+ 		return false;
+ 	}
++    const bool written = SaveToStream(fp);
++    const bool closed = fclose(fp) == 0;
++    return written && closed;
++}
++
++bool VariantDB::SaveToStream(FILE *fp)
++{
++    if (!fp) return false;
+ 	uint32 version = C_VARIANT_DB_FILE_VERSION;
+ 	fwrite(&version, sizeof(uint32), 1, fp);
+ 
+@@ -171,7 +179,6 @@ bool VariantDB::Save(const string &fileName, bool bAddBasePath)
+ 		if (!pV->Save(fp, itor->first))
+ 		{
+ 			LogError("Unable to save data");
+-			fclose(fp);
+ 			return false;
+ 		}
+ 
+@@ -182,8 +189,7 @@ bool VariantDB::Save(const string &fileName, bool bAddBasePath)
+ 	uint32 doneMarker = Variant::TYPE_UNUSED;
+ 	fwrite(&doneMarker, sizeof(uint32), 1, fp);
+ 
+-	fclose(fp);
+-	return true;
++	return ferror(fp) == 0;
+ }
+ 
+ bool VariantDB::Load( const string &fileName, bool *pFileExistedOut, bool bAddBasePath )
+diff --git i/shared/Manager/VariantDB.h w/shared/Manager/VariantDB.h
+index 805c982..f9e1c71 100644
+--- i/shared/Manager/VariantDB.h
++++ w/shared/Manager/VariantDB.h
+@@ -135,6 +135,7 @@ public:
+ 
+ 	//you can load and save the variables in the DB on the fly.  (Does nothing with the functions)
+ 	bool Save(const string &fileName, bool bAddBasePath = true);
++	bool SaveToStream(FILE *fp); // Caller owns flush/close and publication.
+ 	bool Load(const string &fileName, bool *pFileExistedOut = NULL, bool bAddBasePath = true);
+ 	
+ 	string DumpAsString();
+diff --git i/shared/Network/NetSocket.cpp w/shared/Network/NetSocket.cpp
+index 179a718..f6afdd4 100644
+--- i/shared/Network/NetSocket.cpp
++++ w/shared/Network/NetSocket.cpp
+@@ -29,7 +29,9 @@
+ #define INVALID_SOCKET  (~0)
+ #define rt_closesocket(x) close(x)
+ 
+-#if defined(RT_WEBOS_ARM) || defined(ANDROID_NDK) || defined (RTLINUX)
++#if defined(__SWITCH__)
++#include <errno.h>
++#elif defined(RT_WEBOS_ARM) || defined(ANDROID_NDK) || defined (RTLINUX)
+ 	#include <linux/sockios.h>
+ 	#include <errno.h>
+ 
+diff --git i/shared/Renderer/Surface.cpp w/shared/Renderer/Surface.cpp
+index a950838..b4cfdc1 100644
+--- i/shared/Renderer/Surface.cpp
++++ w/shared/Renderer/Surface.cpp
+@@ -503,7 +503,7 @@ CHECK_GL_ERROR();
+ 				//I may want to put the format in rttex_mip_header to allow more flexibility though..
+ 				int colorType = GL_RGB;
+ 				int internalColorFormat = colorType;
+-					#ifdef C_GL_MODE
++					#if defined(C_GL_MODE) && !defined(__SWITCH__)
+ 									if (internalColorFormat == GL_RGBA) internalColorFormat = GL_RGBA8;
+ 									if (internalColorFormat == GL_RGB) internalColorFormat = GL_RGB8;
+ 					#endif
+@@ -549,7 +549,7 @@ CHECK_GL_ERROR();
+ #endif
+ 				
+ 				int internalColorFormat = colorType;
+-#if defined(C_GL_MODE) && !defined(PLATFORM_HTML5)
++#if defined(C_GL_MODE) && !defined(PLATFORM_HTML5) && !defined(__SWITCH__)
+ 
+ 				if (internalColorFormat == GL_RGBA) internalColorFormat = GL_RGBA8;
+ 				if (internalColorFormat == GL_RGB) internalColorFormat = GL_RGB8;
+@@ -1152,6 +1152,22 @@ void Surface::CopyFromScreen()
+ 	int readX = GetPrimaryGLX();
+ 	int readY = GetPrimaryGLY();
+ 
++#ifdef __SWITCH__
++    // Keep the framebuffer on the GPU. Preserve the legacy path if this driver
++    // rejects the copy (for example, an incompatible framebuffer format).
++    static bool useGPUCopy = true;
++    if (useGPUCopy && readX > 0 && readY > 0 && readX <= m_texWidth && readY <= m_texHeight)
++    {
++        CHECK_GL_ERROR();
++        Bind();
++        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, m_texHeight-readY, 0, 0, readX, readY);
++        const GLenum error = glGetError();
++        if (error == GL_NO_ERROR) return;
++        useGPUCopy = false;
++        LogError("Framebuffer copy failed (0x%x); using CPU capture", error);
++    }
++#endif
++
+ 	int bytesPerPix = 4;
+ 
+ 	uint8 * pBuff = new uint8 [readX*readY*bytesPerPix];
+@@ -1343,7 +1359,7 @@ if (bClearFirst)
+ 	int internalColorFormat = colorFormat;
+ 
+ /*
+-#ifdef C_GL_MODE
++#if defined(C_GL_MODE) && !defined(__SWITCH__)
+ 	if (internalColorFormat == GL_RGBA) internalColorFormat = GL_RGBA8;
+ 	if (internalColorFormat == GL_RGB) internalColorFormat = GL_RGB8;
+ 
+@@ -1434,7 +1450,11 @@ void Surface::OnUnloadSurfaces()
+ bool Surface::CreateSoftSurfaceFromSurface(SoftSurface& outSurf, bool bUseOriginalSizes )
+ {
+ 
+-#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_IOS)
++#if defined(__SWITCH__)
++	// GLES1 has no glGetTexImage. No active Dink gameplay path calls this.
++	LogError("Texture readback is unavailable on Switch GLES1");
++	return false;
++#elif !defined(PLATFORM_ANDROID) && !defined(PLATFORM_IOS)
+ 	if (!m_glTextureID)
+ 	{
+ 		LogMsg("No OpenGL texture found on this Surface.");
+diff --git i/shared/SDL/SDL2Main.cpp w/shared/SDL/SDL2Main.cpp
+index 8070ae5..3c07e3c 100644
+--- i/shared/SDL/SDL2Main.cpp
++++ w/shared/SDL/SDL2Main.cpp
+@@ -1,5 +1,11 @@
+ #include "PlatformSetup.h"
+ #include "SDL2Main.h"
++#ifdef __SWITCH__
++#include <switch.h>
++#include "PerformancePolicy.h"
++#include "ScreenLoadProfile.h"
++#include <sys/stat.h>
++#endif
+ 
+ #ifdef WIN32
+ #include <direct.h>
+@@ -116,7 +122,7 @@ bool initSDL_GLES()
+ 	initFlags = initFlags|SDL_INIT_AUDIO;
+ #endif
+ 
+-	SDL_Init(initFlags);              // Initialize SDL2
++	if (SDL_Init(initFlags) != 0) return false; // propagate initialization errors
+ 
+ 	SDL_JoystickEventState(SDL_ENABLE);
+ 
+@@ -168,8 +174,14 @@ bool initSDL_GLES()
+ #else
+ 
+ 	
++#ifdef __SWITCH__
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
++#else
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
+     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
++#endif
+ 
+     /* Turn on double buffering with a 24bit Z buffer.
+      * You may need to change this to 16 or 32 for your system */
+@@ -381,11 +393,14 @@ bool InitSDL()
+ 
+ 	
+ #ifdef C_GL_MODE
+-	InitGLESContextWithSDL(); //doesn't work to get v1.1 gles context, but fine for opengl
++	if (!InitGLESContextWithSDL()) return false; //doesn't work to get v1.1 gles context, but fine for opengl
+ #else
+ 	InitGLESContextWithEGL(); //gles v1.1 mode for raspberry pi
+ #endif
+ 
++#ifdef __SWITCH__
++    LogMsg("Switch GL version: %s; renderer: %s", glGetString(GL_VERSION), glGetString(GL_RENDERER));
++#endif
+ 	glClearColor(0,0,0,1);
+ 	glClear(GL_COLOR_BUFFER_BIT);
+ 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+@@ -845,8 +860,22 @@ int SDL_main(int argc, char *argv[])
+ #endif
+ {
+ 
++#ifdef __SWITCH__
++    socketInitializeDefault();
++    mkdir("sdmc:/switch/dink-smallwood", 0777);
++    if (chdir("sdmc:/switch/dink-smallwood") != 0) {
++        socketExit();
++        return 1;
++    }
++    // SDL_mixer on Switch uses TiMidity (GUS patches), not the desktop SF2 backend.
++    // Configure it before BaseApp opens the mixer. cwd is fixed above.
++    setenv("TIMIDITY_CFG", "dink/midi/freepats/timidity.cfg", 1);
++    uint32 width = 1280;
++    uint32 height = 720;
++#else
+ 	uint32 width = 1920;
+ 	uint32 height = 1080;
++#endif
+ 
+ 
+ #ifdef WIN32
+@@ -870,6 +899,9 @@ int SDL_main(int argc, char *argv[])
+ 		}
+ 	}
+ 
++#ifdef __SWITCH__
++    GetBaseApp()->AddCommandLineParm("-skip");
++#endif
+ 	LogMsg("Initting Proton's SDL2 layer.  %d parms detected", GetBaseApp()->GetCommandLineParms().size());
+ 
+ 
+@@ -906,13 +938,42 @@ int SDL_main(int argc, char *argv[])
+ 		goto cleanup;
+ 	}
+ 
++#ifdef __SWITCH__
++    SetupFakePrimaryScreenSize(1024, 768, true);
++#endif
+ 	GetBaseApp()->OnScreenSizeChange();
+ 
+-	static Uint32 nextFrameTick = 0;
+-	static Uint32 frameDelayMS = 0;
++#ifdef __SWITCH__
++    {
++    dink_perf::FramePacer framePacer;
++    dink_perf::FrameStats frameStats;
++    const bool profileFrames = SwitchScreenLoadProfile::Enabled();
++    const Uint64 timerFrequency = SDL_GetPerformanceFrequency();
++    framePacer.configure(timerFrequency, 60);
++    bool swapPacesFrames = SDL_GL_SetSwapInterval(1) == 0 && SDL_GL_GetSwapInterval() == 1;
++#else
++    static Uint32 nextFrameTick = 0;
++    static Uint32 frameDelayMS = 0;
++#endif
+ 
+ 	while(1)
+ 	{
++#ifdef __SWITCH__
++        if (!appletMainLoop()) break;
++        // Pause audio when in background/HOME menu/sleep to eliminate CPU load from TiMidity synthesis.
++        static bool s_audioPausedByFocus = false;
++        const AppletFocusState focus = appletGetFocusState();
++        if (focus != AppletFocusState_InFocus) {
++            if (!s_audioPausedByFocus) {
++                SDL_PauseAudio(1);
++                s_audioPausedByFocus = true;
++            }
++        } else if (s_audioPausedByFocus) {
++            SDL_PauseAudio(0);
++            s_audioPausedByFocus = false;
++        }
++        framePacer.begin(SDL_GetPerformanceCounter());
++#endif
+ 		if (g_bAppFinished)
+ 		{
+ 			break;
+@@ -984,6 +1045,18 @@ int SDL_main(int argc, char *argv[])
+ 					break;
+ 					
+ 				case OSMessage::MESSAGE_SET_FPS_LIMIT:
++#ifdef __SWITCH__
++                    {
++                        const unsigned fps = m.m_x <= 30.0f && m.m_x > 0 ? 30 : 60;
++                        const int interval = fps == 30 ? 2 : 1;
++                        swapPacesFrames = SDL_GL_SetSwapInterval(interval) == 0 && SDL_GL_GetSwapInterval() == interval;
++                        if (!swapPacesFrames) SDL_GL_SetSwapInterval(0);
++                        framePacer.configure(timerFrequency, fps);
++                        frameStats.reset();
++                        framePacer.begin(SDL_GetPerformanceCounter());
++                        LogMsg("Switch frame pacing: %u FPS, %s", fps, swapPacesFrames ? "display sync" : "software timer");
++                    }
++#else
+ 					if (m.m_x == 0.0f)
+ 					{
+ 						frameDelayMS = 0;
+@@ -993,6 +1066,7 @@ int SDL_main(int argc, char *argv[])
+ 						SDL_GL_SetSwapInterval(1);
+ 						frameDelayMS = (int)(1000.0f / m.m_x);
+ 					}
++#endif
+ 					break;
+ 
+ 				case OSMessage::MESSAGE_SET_ACCELEROMETER_UPDATE_HZ:
+@@ -1011,6 +1085,17 @@ int SDL_main(int argc, char *argv[])
+ 		SDL_GL_SwapWindow(g_window);
+ #endif
+ 
++#ifdef __SWITCH__
++        if (profileFrames && frameStats.record(SDL_GetPerformanceCounter(), timerFrequency)) {
++            LogMsg("[frames] interval median=%.3f ms p95=%.3f ms p99=%.3f ms", frameStats.percentile(.5), frameStats.percentile(.95), frameStats.percentile(.99));
++            frameStats.reset();
++        }
++        if (!swapPacesFrames) {
++            const Uint64 ticks = framePacer.remaining(SDL_GetPerformanceCounter());
++            if (ticks) SDL_Delay(Uint32((ticks*1000 + timerFrequency-1) / timerFrequency));
++            framePacer.finish(SDL_GetPerformanceCounter());
++        }
++#else
+ 		// Control FPS and give some time for other processes too
+ 		Uint32 sleepTime = 1;
+ 
+@@ -1026,14 +1111,21 @@ int SDL_main(int argc, char *argv[])
+ 
+ 		SDL_Delay(sleepTime);
+ 		nextFrameTick = SDL_GetTicks() + frameDelayMS;
++#endif
+ 	}
+ 	
++#ifdef __SWITCH__
++    }
++#endif
+ 	GetBaseApp()->Kill();
+ 
+ cleanup:
+ 	
+ 	
+ 	SDL_Quit();
++#ifdef __SWITCH__
++    socketExit();
++#endif
+ 
+ 	LogMsg("Cleanly quitting");
+ #ifndef C_GL_MODE
+diff --git i/shared/linux/LinuxUtils.cpp w/shared/linux/LinuxUtils.cpp
+index c3d91d5..63a8d3f 100644
+--- i/shared/linux/LinuxUtils.cpp
++++ w/shared/linux/LinuxUtils.cpp
+@@ -86,6 +86,9 @@ void LaunchEmail(string subject, string content)
+ 
+ void LaunchURL(string url)
+ {
++#ifdef __SWITCH__
++	LogMsg("External URL unavailable on Switch: %s", url.c_str());
++#else
+ 	LogMsg("LaunchURL: %s", url.c_str());
+ 	string cmd = "xdg-open \"" + url + "\"";
+ 	int result = system(cmd.c_str());
+@@ -93,6 +96,7 @@ void LaunchURL(string url)
+ 	{
+ 		LogMsg("LaunchURL: xdg-open failed with code %d", result);
+ 	}
++#endif
+ }
+ 
+ string GetClipboardText()
+diff --git i/shared/linux/PlatformSetupLinux.h w/shared/linux/PlatformSetupLinux.h
+index 7a389ad..014ecf6 100644
+--- i/shared/linux/PlatformSetupLinux.h
++++ w/shared/linux/PlatformSetupLinux.h
+@@ -2,7 +2,9 @@
+ #define PlatformSetupLinux_h__
+ 
+ //need these for the real compile
++#ifndef __SWITCH__
+ #include <syslog.h>
++#endif
+ #include <unistd.h>
+ #include <stdint.h>
+ #include <string.h>
+@@ -13,7 +15,13 @@
+ #include <cassert>
+ #include <sys/time.h>
+ 
+-#ifndef _CONSOLE
++#if defined(__SWITCH__) && !defined(_CONSOLE)
++#include <GLES/gl.h>
++#include <GLES/glext.h>
++#include "Renderer/GLCompatGLES.h"
++#define glOrtho glOrthof
++#define glFrustum glFrustumf
++#elif !defined(_CONSOLE)
+ 
+ 	#ifdef C_GL_MODE
+ 	#ifdef RT_USING_OSMESA
+diff --git i/shared/util/ResourceUtils.cpp w/shared/util/ResourceUtils.cpp
+index 9dcbcb9..e3705b7 100644
+--- i/shared/util/ResourceUtils.cpp
++++ w/shared/util/ResourceUtils.cpp
+@@ -10,6 +10,10 @@
+ #include "html5/HTML5Utils.h"
+ #endif
+ 
++#ifdef __SWITCH__
++#include "PathCache.h"
++#endif
++
+ bool IsPowerOf2(int n) { return (!(n & (n - 1))); }
+ 
+ bool SaveToFile(const string &str, FILE *fp)
+@@ -144,6 +148,14 @@ bool FileExists(const string &fName)
+ #if !defined(CLANLIB_1) && !defined(_CONSOLE)
+ 	if (GetFileManager())
+ 	{
++#ifdef __SWITCH__
++		if (dink_path_cache::isCacheable(fName))
++		{
++			return dink_path_cache::exists(fName, [](const string& p) {
++				return GetFileManager()->FileExists(p, false);
++			});
++		}
++#endif
+ 		return GetFileManager()->FileExists(fName, false);
+ 	} 
+ 
